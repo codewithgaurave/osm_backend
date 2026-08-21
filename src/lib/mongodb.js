@@ -39,7 +39,7 @@ const seedInitialData = async () => {
       const admin = await User.create({
         name: 'Admin User',
         email: 'admin@oms.com',
-        password: 'password123',
+        password: '123456',
         role: 'admin',
         phone: '+1234567890'
       });
@@ -47,7 +47,7 @@ const seedInitialData = async () => {
       const staffAhmed = await User.create({
         name: 'Ahmed',
         email: 'ahmed@oms.com',
-        password: 'password123',
+        password: '123456',
         role: 'staff',
         phone: '+1234567891'
       });
@@ -55,7 +55,7 @@ const seedInitialData = async () => {
       const staffJohn = await User.create({
         name: 'John',
         email: 'john@oms.com',
-        password: 'password123',
+        password: '123456',
         role: 'staff',
         phone: '+1234567892'
       });
@@ -63,7 +63,7 @@ const seedInitialData = async () => {
       const staffAli = await User.create({
         name: 'Ali',
         email: 'ali@oms.com',
-        password: 'password123',
+        password: '123456',
         role: 'staff',
         phone: '+1234567893'
       });
@@ -71,7 +71,7 @@ const seedInitialData = async () => {
       const staffSarah = await User.create({
         name: 'Sarah',
         email: 'sarah@oms.com',
-        password: 'password123',
+        password: '123456',
         role: 'staff',
         phone: '+1234567894'
       });

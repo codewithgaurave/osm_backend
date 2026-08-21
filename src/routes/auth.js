@@ -9,22 +9,26 @@ const JWT_SECRET = process.env.JWT_SECRET || 'oms_production_jwt_secret_key_2026
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
-    const { email, password, role } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
 
-    let user = await User.findOne({ email: email.toLowerCase().trim() });
-
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user) {
-      // Auto create demo user if not existing
-      const userRole = role || (email.includes('admin') ? 'admin' : 'staff');
-      const name = email.split('@')[0].replace('.', ' ').replace(/^./, str => str.toUpperCase());
-      user = await User.create({
-        name,
-        email: email.toLowerCase().trim(),
-        password: password || 'password123',
-        role: userRole,
-        phone: '+1234567890'
-      });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check password (supports configured password or initial 123456 / password123)
+    const isMatch = user.password === password || (user.password === 'password123' && password === '123456');
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // If password was default 'password123' and user entered '123456', update to '123456'
+    if (user.password === 'password123' && password === '123456') {
+      user.password = '123456';
+      await user.save();
     }
 
     const token = jwt.sign(

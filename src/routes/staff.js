@@ -17,7 +17,7 @@ router.get('/', authenticate, async (req, res) => {
 // POST /api/staff - admin adds staff member
 router.post('/', authenticate, adminOnly, async (req, res) => {
   try {
-    const { name, email, phone, role } = req.body;
+    const { name, email, phone, role, password } = req.body;
     if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
 
     const existing = await User.findOne({ email: email.toLowerCase().trim() });
@@ -28,7 +28,7 @@ router.post('/', authenticate, adminOnly, async (req, res) => {
       email: email.toLowerCase().trim(),
       phone: phone || '',
       role: role || 'staff',
-      password: 'password123'
+      password: password || '123456'
     });
 
     res.status(201).json({ id: newStaff._id.toString(), ...newStaff.toObject() });

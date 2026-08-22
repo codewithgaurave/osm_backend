@@ -14,6 +14,11 @@ const orderSchema = new mongoose.Schema({
     enum: ['draft', 'submitted', 'approved', 'ordered', 'packed', 'loaded', 'arrived', 'completed'],
     default: 'draft'
   },
+  company: { type: String, default: '' },
+  batchNumber: { type: String, default: 'Batch 1' },
+  isSentToSupplier: { type: Boolean, default: false },
+  sentToSupplierAt: { type: Date, default: null },
+  parentOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
   items: [orderItemSchema],
   totalQuantity: { type: Number, default: 0 },
   totalCuft: { type: Number, default: 0 },
@@ -22,6 +27,7 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 orderSchema.index({ staffId: 1, status: 1 });
+orderSchema.index({ company: 1, isSentToSupplier: 1 });
 
 export const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
 export default Order;

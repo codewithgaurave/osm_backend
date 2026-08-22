@@ -204,18 +204,53 @@ router.post('/cell-update', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Product or staff not found' });
     }
 
-    // Find or create active order for this staff
-    let order = await Order.findOne({ staffId: targetStaffId });
-    if (!order) {
+    // Find active (unsent) order for this staff, or create one
+    // If the existing order with this product is already sent to supplier, create a new batch!
+    const sentOrders = await Order.find({
+      staffId: targetStaffId,
+      $or: [{ isSentToSupplier: true }, { status: { $in: ['ordered', 'packed', 'loaded', 'arrived'] } }]
+    });
+
+    let activeOrder = await Order.findOne({
+      staffId: targetStaffId,
+      isSentToSupplier: false,
+      status: { $in: ['draft', 'submitted', 'approved'] }
+    });
+
+    // Check if there is already a sent order containing this product
+    const alreadySentItemOrder = sentOrders.find(o => 
+      o.items.some(i => i.productId.toString() === productId)
+    );
+
+    let order;
+    if (alreadySentItemOrder && !activeOrder) {
+      // Create a new Addendum Batch order
+      const batchCount = sentOrders.length + 1;
+      order = await Order.create({
+        orderNumber: `ORD-${Date.now().toString().slice(-4)}-B${batchCount}`,
+        staffId: targetStaffId,
+        status: 'submitted',
+        company: product.company,
+        batchNumber: `Batch ${batchCount} (Addendum)`,
+        isSentToSupplier: false,
+        parentOrderId: alreadySentItemOrder._id,
+        items: []
+      });
+    } else if (activeOrder) {
+      order = activeOrder;
+    } else {
       order = await Order.create({
         orderNumber: `ORD-${Date.now().toString().slice(-4)}`,
         staffId: targetStaffId,
         status: 'submitted',
+        company: product.company,
+        batchNumber: 'Batch 1',
+        isSentToSupplier: false,
         items: []
       });
     }
 
-    // Check item existence
+    // Check item existence in the current active order
     const itemIndex = order.items.findIndex(i => i.productId.toString() === productId);
     const oldQty = itemIndex >= 0 ? order.items[itemIndex].quantity : 0;
 
@@ -248,12 +283,19 @@ router.post('/cell-update', authenticate, async (req, res) => {
         'order_items',
         productId,
         { product: `${product.model} (${product.description})`, staff: staff.name, quantity: oldQty },
-        { product: `${product.model} (${product.description})`, staff: staff.name, quantity: targetQty },
-        { change: `${oldQty} → ${targetQty}`, staffName: staff.name, model: product.model }
+        { product: `${product.model} (${product.description})`, staff: staff.name, quantity: targetQty, batch: order.batchNumber },
+        { change: `${oldQty} → ${targetQty}`, staffName: staff.name, model: product.model, batch: order.batchNumber }
       );
     }
 
-    res.json({ message: 'Order cell updated', productId, staffId: targetStaffId, quantity: targetQty });
+    res.json({ 
+      message: 'Order cell updated', 
+      productId, 
+      staffId: targetStaffId, 
+      quantity: targetQty,
+      batchNumber: order.batchNumber,
+      orderNumber: order.orderNumber
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -271,7 +313,7 @@ router.post('/submit', authenticate, async (req, res) => {
 
     const orderNumber = `ORD-${Date.now().toString().slice(-4)}`;
     order.status = 'submitted';
-    order.orderNumber = orderNumber;
+    order.orderNumber = order.orderNumber || orderNumber;
     await order.save();
 
     await recordAuditLog(
@@ -279,13 +321,98 @@ router.post('/submit', authenticate, async (req, res) => {
       req.user.name,
       'order_submitted',
       'orders',
-      orderNumber,
+      order._id.toString(),
       { status: 'draft' },
       { status: 'submitted' },
-      { orderNumber }
+      { orderNumber: order.orderNumber }
     );
 
-    res.json({ message: 'Order submitted successfully', orderNumber });
+    res.json({ message: 'Order submitted successfully', orderNumber: order.orderNumber });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/orders/:id/mark-sent - Admin marks purchase order batch as sent to supplier
+router.post('/:id/mark-sent', authenticate, adminOnly, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    order.isSentToSupplier = true;
+    order.sentToSupplierAt = new Date();
+    order.status = 'ordered';
+    await order.save();
+
+    await recordAuditLog(
+      req.user.id,
+      req.user.name,
+      'order_sent_to_supplier',
+      'orders',
+      order._id.toString(),
+      { isSentToSupplier: false },
+      { isSentToSupplier: true, status: 'ordered' },
+      { orderNumber: order.orderNumber, batch: order.batchNumber }
+    );
+
+    res.json({ message: 'Order marked as sent to supplier', order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/orders/:id/combine - Admin combines an approved addendum batch into a target order
+router.post('/:id/combine', authenticate, adminOnly, async (req, res) => {
+  try {
+    const addendumOrder = await Order.findById(req.params.id);
+    if (!addendumOrder) return res.status(404).json({ error: 'Addendum order not found' });
+
+    const targetOrderId = req.body.targetOrderId || addendumOrder.parentOrderId;
+    if (!targetOrderId) {
+      return res.status(400).json({ error: 'Target order ID is required for combining' });
+    }
+
+    const targetOrder = await Order.findById(targetOrderId);
+    if (!targetOrder) return res.status(404).json({ error: 'Target order not found' });
+
+    // Merge items from addendum into target order
+    addendumOrder.items.forEach(addendumItem => {
+      const existingIdx = targetOrder.items.findIndex(
+        i => i.productId.toString() === addendumItem.productId.toString()
+      );
+      if (existingIdx >= 0) {
+        targetOrder.items[existingIdx].quantity += addendumItem.quantity;
+      } else {
+        targetOrder.items.push({
+          productId: addendumItem.productId,
+          quantity: addendumItem.quantity,
+          unitCuft: addendumItem.unitCuft
+        });
+      }
+    });
+
+    // Recalculate target totals
+    targetOrder.totalQuantity = targetOrder.items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+    targetOrder.totalCuft = Number(
+      targetOrder.items.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2)
+    );
+    await targetOrder.save();
+
+    // Delete or mark addendum order as merged
+    await Order.findByIdAndDelete(addendumOrder._id);
+
+    await recordAuditLog(
+      req.user.id,
+      req.user.name,
+      'orders_combined',
+      'orders',
+      targetOrder._id.toString(),
+      { combinedOrder: addendumOrder.orderNumber },
+      { newTotalQty: targetOrder.totalQuantity, newTotalCuft: targetOrder.totalCuft },
+      { message: `Combined ${addendumOrder.orderNumber} into ${targetOrder.orderNumber}` }
+    );
+
+    res.json({ message: 'Orders combined successfully', targetOrder });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -306,13 +433,17 @@ router.patch('/:id/status', authenticate, adminOnly, async (req, res) => {
 
     const oldStatus = order.status;
     order.status = status;
+    if (status === 'ordered' && !order.isSentToSupplier) {
+      order.isSentToSupplier = true;
+      order.sentToSupplierAt = new Date();
+    }
     await order.save();
 
     // Notify staff member
     await Notification.create({
       userId: order.staffId,
       title: 'Order Status Update',
-      message: `Order ${order.orderNumber || order._id} status changed to ${status.toUpperCase()}.`,
+      message: `Order ${order.orderNumber || order._id} (${order.batchNumber || 'Batch 1'}) status changed to ${status.toUpperCase()}.`,
       read: false
     });
 
@@ -337,17 +468,35 @@ router.patch('/:id/status', authenticate, adminOnly, async (req, res) => {
 router.get('/', authenticate, async (req, res) => {
   try {
     const filter = req.user.role !== 'admin' ? { staffId: req.user.id } : {};
-    const orders = await Order.find(filter).populate('staffId', 'name email').sort({ createdAt: -1 });
+    const orders = await Order.find(filter)
+      .populate('staffId', 'name email')
+      .populate('items.productId', 'model description company cuft')
+      .sort({ createdAt: -1 });
 
     const enriched = orders.map(o => ({
       id: o._id.toString(),
       orderNumber: o.orderNumber,
       status: o.status,
+      batchNumber: o.batchNumber || 'Batch 1',
+      isSentToSupplier: o.isSentToSupplier || false,
+      sentToSupplierAt: o.sentToSupplierAt,
+      parentOrderId: o.parentOrderId ? o.parentOrderId.toString() : null,
+      company: o.company || '',
       date: o.date,
+      staffId: o.staffId?._id?.toString() || (typeof o.staffId === 'string' ? o.staffId : null),
       staffName: o.staffId?.name || 'Unknown',
       itemCount: o.items.length,
       totalQuantity: o.totalQuantity,
-      totalCuft: o.totalCuft
+      totalCuft: o.totalCuft,
+      items: o.items.map(i => ({
+        id: i._id?.toString(),
+        productId: i.productId?._id?.toString() || i.productId,
+        model: i.productId?.model || 'Product',
+        description: i.productId?.description || '',
+        company: i.productId?.company || '',
+        quantity: i.quantity,
+        unitCuft: i.unitCuft
+      }))
     }));
 
     res.json(enriched);

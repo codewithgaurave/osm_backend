@@ -61,6 +61,48 @@ router.get('/companies', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/products/favorites - get logged in user's favorite product IDs
+router.get('/favorites', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('favorites');
+    const favorites = (user?.favorites || []).map(f => f.toString());
+    res.json(favorites);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/products/:id/favorite - toggle favorite on/off
+router.post('/:id/favorite', authenticate, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    user.favorites = user.favorites || [];
+    const index = user.favorites.findIndex(f => f.toString() === productId);
+    let isFavorite = false;
+
+    if (index >= 0) {
+      user.favorites.splice(index, 1);
+      isFavorite = false;
+    } else {
+      user.favorites.push(productId);
+      isFavorite = true;
+    }
+
+    await user.save();
+    res.json({
+      success: true,
+      isFavorite,
+      favorites: user.favorites.map(f => f.toString()),
+      message: isFavorite ? 'Added to favorites' : 'Removed from favorites'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/products/pending - admin pending approval queue
 router.get('/pending', authenticate, adminOnly, async (req, res) => {
   try {

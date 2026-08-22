@@ -6,7 +6,8 @@ const userSchema = new mongoose.Schema({
   password: { type: String, default: '123456' },
   role: { type: String, enum: ['admin', 'staff'], default: 'staff' },
   phone: { type: String, default: '' },
-  avatarUrl: { type: String, default: '' }
+  avatarUrl: { type: String, default: '' },
+  favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }]
 }, { timestamps: true });
 
 export const User = mongoose.models.User || mongoose.model('User', userSchema);

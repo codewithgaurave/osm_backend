@@ -9,20 +9,30 @@ const JWT_SECRET = process.env.JWT_SECRET || 'oms_production_jwt_secret_key_2026
 // POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const cleanEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: cleanEmail });
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email or password. User not found.' });
     }
 
     // Check password (supports configured password or initial 123456 / password123)
-    const isMatch = user.password === password || (user.password === 'password123' && password === '123456');
+    const isMatch = user.password === password || 
+                    (user.password === 'password123' && password === '123456') || 
+                    (user.password === '123456' && password === 'password123');
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid password. Please check your credentials.' });
+    }
+
+    // Role validation: If the user selected a specific role (Admin vs Staff)
+    if (role && user.role !== role) {
+      return res.status(403).json({ 
+        error: `Role Mismatch: This account is registered as '${user.role.toUpperCase()}'. Please select the '${user.role === 'admin' ? 'Admin' : 'Staff'}' tab to login.` 
+      });
     }
 
     // If password was default 'password123' and user entered '123456', update to '123456'

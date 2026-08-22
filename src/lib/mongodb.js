@@ -32,51 +32,54 @@ export const connectDB = async () => {
 
 const seedInitialData = async () => {
   try {
-    // 1. Seed Users if empty
-    const userCount = await User.countDocuments();
-    if (userCount === 0) {
-      console.log('🌱 Seeding initial users...');
-      const admin = await User.create({
+    // 1. Ensure Admin User exists
+    let admin = await User.findOne({ email: 'admin@oms.com' });
+    if (!admin) {
+      console.log('🌱 Creating default Admin account...');
+      admin = await User.create({
         name: 'Admin User',
         email: 'admin@oms.com',
         password: '123456',
         role: 'admin',
         phone: '+1234567890'
       });
+    }
 
-      const staffAhmed = await User.create({
-        name: 'Ahmed',
-        email: 'ahmed@oms.com',
-        password: '123456',
-        role: 'staff',
-        phone: '+1234567891'
-      });
+    // 2. Ensure Staff Users exist
+    const defaultStaff = [
+      { name: 'Ahmed', email: 'ahmed@oms.com', password: '123456', role: 'staff', phone: '+1234567891' },
+      { name: 'John', email: 'john@oms.com', password: '123456', role: 'staff', phone: '+1234567892' },
+      { name: 'Ali', email: 'ali@oms.com', password: '123456', role: 'staff', phone: '+1234567893' },
+      { name: 'Sarah', email: 'sarah@oms.com', password: '123456', role: 'staff', phone: '+1234567894' }
+    ];
 
-      const staffJohn = await User.create({
-        name: 'John',
-        email: 'john@oms.com',
-        password: '123456',
-        role: 'staff',
-        phone: '+1234567892'
-      });
+    const staffAhmed = await User.findOneAndUpdate(
+      { email: 'ahmed@oms.com' },
+      { $setOnInsert: defaultStaff[0] },
+      { upsert: true, new: true }
+    );
 
-      const staffAli = await User.create({
-        name: 'Ali',
-        email: 'ali@oms.com',
-        password: '123456',
-        role: 'staff',
-        phone: '+1234567893'
-      });
+    const staffJohn = await User.findOneAndUpdate(
+      { email: 'john@oms.com' },
+      { $setOnInsert: defaultStaff[1] },
+      { upsert: true, new: true }
+    );
 
-      const staffSarah = await User.create({
-        name: 'Sarah',
-        email: 'sarah@oms.com',
-        password: '123456',
-        role: 'staff',
-        phone: '+1234567894'
-      });
+    const staffAli = await User.findOneAndUpdate(
+      { email: 'ali@oms.com' },
+      { $setOnInsert: defaultStaff[2] },
+      { upsert: true, new: true }
+    );
 
-      // 2. Seed Master Products
+    const staffSarah = await User.findOneAndUpdate(
+      { email: 'sarah@oms.com' },
+      { $setOnInsert: defaultStaff[3] },
+      { upsert: true, new: true }
+    );
+
+    // 3. Seed Master Products if empty
+    const productCount = await Product.countDocuments();
+    if (productCount === 0) {
       console.log('🌱 Seeding master products...');
       const productsData = [
         { company: 'PREMIER', model: 'MW-6647', description: 'Microwave 0.7 cuft 700W', cuft: 0.85, weight: 10.5, category: 'Kitchen', status: 'approved' },

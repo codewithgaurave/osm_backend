@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'oms_super_secret_jwt_key_2026';
+const JWT_SECRET = process.env.JWT_SECRET || 'oms_production_jwt_secret_key_2026_secure';
 
 export const authenticate = (req, res, next) => {
   const authHeader = req.headers.authorization;

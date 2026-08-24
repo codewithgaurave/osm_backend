@@ -3,6 +3,7 @@ import Product from '../models/Product.js';
 import AuditLog from '../models/AuditLog.js';
 import Notification from '../models/Notification.js';
 import User from '../models/User.js';
+import Order from '../models/Order.js';
 import { authenticate, adminOnly } from '../middleware/auth.js';
 
 const router = Router();
@@ -226,6 +227,28 @@ router.put('/:id', authenticate, adminOnly, async (req, res) => {
     if (notes !== undefined) product.notes = notes;
 
     await product.save();
+
+    // If cuft changed, synchronize existing orders containing this product
+    if (cuft !== undefined && Number(cuft) !== oldProduct.cuft) {
+      try {
+        const affectedOrders = await Order.find({ 'items.productId': product._id });
+        for (const order of affectedOrders) {
+          let orderModified = false;
+          order.items.forEach(item => {
+            if (item.productId.toString() === product._id.toString()) {
+              item.unitCuft = Number(cuft);
+              orderModified = true;
+            }
+          });
+          if (orderModified) {
+            order.totalCuft = Number(order.items.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2));
+            await order.save();
+          }
+        }
+      } catch (err) {
+        console.warn('Order cuft sync error:', err.message);
+      }
+    }
 
     await recordAuditLog(
       req.user.id,

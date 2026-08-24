@@ -47,7 +47,7 @@ router.get('/matrix', authenticate, async (req, res) => {
     const [products, staffList, orders] = await Promise.all([
       Product.find(productFilter).sort({ company: 1, model: 1 }),
       User.find(staffFilter).sort({ name: 1 }),
-      Order.find({ status: { $ne: 'draft' } })
+      Order.find({})
     ]);
 
     const matrix = products.map(product => {
@@ -305,29 +305,54 @@ router.post('/cell-update', authenticate, async (req, res) => {
 router.post('/submit', authenticate, async (req, res) => {
   try {
     const staffId = req.user.id;
-    const order = await Order.findOne({ staffId, status: 'draft' });
+    // Find active (unsent) orders for this staff
+    const activeOrders = await Order.find({ staffId, isSentToSupplier: false });
 
-    if (!order) {
-      return res.status(400).json({ error: 'No draft order to submit' });
+    if (!activeOrders || activeOrders.length === 0 || activeOrders.every(o => !o.items || o.items.length === 0 || o.totalQuantity === 0)) {
+      return res.status(400).json({ error: 'No items found in your order. Please enter quantities in the grid before submitting.' });
     }
 
-    const orderNumber = `ORD-${Date.now().toString().slice(-4)}`;
-    order.status = 'submitted';
-    order.orderNumber = order.orderNumber || orderNumber;
-    await order.save();
+    const orderNumbers = [];
 
-    await recordAuditLog(
-      req.user.id,
-      req.user.name,
-      'order_submitted',
-      'orders',
-      order._id.toString(),
-      { status: 'draft' },
-      { status: 'submitted' },
-      { orderNumber: order.orderNumber }
-    );
+    for (const order of activeOrders) {
+      if (order.totalQuantity > 0) {
+        if (!order.orderNumber) {
+          order.orderNumber = `ORD-${Date.now().toString().slice(-4)}`;
+        }
+        order.status = 'submitted';
+        await order.save();
+        orderNumbers.push(order.orderNumber);
 
-    res.json({ message: 'Order submitted successfully', orderNumber: order.orderNumber });
+        // Notify admins
+        const admins = await User.find({ role: 'admin' });
+        for (const admin of admins) {
+          await Notification.create({
+            userId: admin._id,
+            title: 'Order Batch Submitted',
+            message: `${req.user.name} submitted order ${order.orderNumber} with ${order.totalQuantity} items (${order.totalCuft} cuft).`,
+            read: false
+          });
+        }
+
+        await recordAuditLog(
+          req.user.id,
+          req.user.name,
+          'order_submitted',
+          'orders',
+          order._id.toString(),
+          null,
+          { status: 'submitted', totalQuantity: order.totalQuantity, totalCuft: order.totalCuft },
+          { orderNumber: order.orderNumber, staffName: req.user.name }
+        );
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Orders submitted successfully! (${orderNumbers.join(', ')})`, 
+      orderNumbers,
+      orderNumber: orderNumbers[0] 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

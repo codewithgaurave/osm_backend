@@ -12,20 +12,20 @@ router.get('/', authenticate, async (req, res) => {
 
     if (req.user.role !== 'admin') {
       filter.userId = req.user.id;
-    } else if (userId && userId !== 'All') {
+    } else if (userId && userId !== 'All' && userId !== 'undefined' && userId !== 'null') {
       filter.userId = userId;
     }
 
-    if (action && action !== 'All') {
+    if (action && action !== 'All' && action !== 'undefined' && action !== 'null') {
       filter.action = action;
     }
 
-    if (entity && entity !== 'All') {
+    if (entity && entity !== 'All' && entity !== 'undefined' && entity !== 'null') {
       filter.entity = entity;
     }
 
-    if (search) {
-      const q = new RegExp(search, 'i');
+    if (search && search !== 'undefined' && search !== 'null' && search.trim() !== '') {
+      const q = new RegExp(search.trim(), 'i');
       filter.$or = [
         { userName: q },
         { action: q },

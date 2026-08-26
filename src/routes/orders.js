@@ -31,16 +31,16 @@ router.get('/matrix', authenticate, async (req, res) => {
     const { company, search, staffId } = req.query;
 
     const productFilter = { status: 'approved' };
-    if (company && company !== 'All') {
-      productFilter.company = new RegExp(`^${company}$`, 'i');
+    if (company && company !== 'All' && company !== 'undefined' && company !== 'null') {
+      productFilter.company = new RegExp(`^${company.trim()}$`, 'i');
     }
-    if (search) {
-      const q = new RegExp(search, 'i');
+    if (search && search !== 'undefined' && search !== 'null' && search.trim() !== '') {
+      const q = new RegExp(search.trim(), 'i');
       productFilter.$or = [{ model: q }, { description: q }, { company: q }];
     }
 
     const staffFilter = { role: 'staff' };
-    if (staffId && staffId !== 'All') {
+    if (staffId && staffId !== 'All' && staffId !== 'undefined' && staffId !== 'null') {
       staffFilter._id = staffId;
     }
 

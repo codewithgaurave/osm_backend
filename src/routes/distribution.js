@@ -174,7 +174,7 @@ router.post('/update', authenticate, adminOnly, async (req, res) => {
 // GET /api/distribution/pending - Pending items for salesperson
 router.get('/pending', authenticate, async (req, res) => {
   try {
-    const targetStaffId = req.user.role === 'admin' && req.query.staffId ? req.query.staffId : req.user.id;
+    const targetStaffId = req.user.role === 'admin' && req.query.staffId && req.query.staffId !== 'undefined' && req.query.staffId !== 'null' ? req.query.staffId : req.user.id;
     const [staff, orders, distRecords, products] = await Promise.all([
       User.findById(targetStaffId),
       Order.find({ staffId: targetStaffId }),
@@ -237,7 +237,7 @@ router.get('/pending', authenticate, async (req, res) => {
 // GET /api/distribution/received - Received items for salesperson
 router.get('/received', authenticate, async (req, res) => {
   try {
-    const targetStaffId = req.user.role === 'admin' && req.query.staffId ? req.query.staffId : req.user.id;
+    const targetStaffId = req.user.role === 'admin' && req.query.staffId && req.query.staffId !== 'undefined' && req.query.staffId !== 'null' ? req.query.staffId : req.user.id;
     const [staff, containers, distRecords, products] = await Promise.all([
       User.findById(targetStaffId),
       Container.find(),

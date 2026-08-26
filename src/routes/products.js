@@ -32,12 +32,12 @@ router.get('/', authenticate, async (req, res) => {
     const { company, search } = req.query;
     const filter = { status: 'approved' };
 
-    if (company && company !== 'All') {
-      filter.company = new RegExp(`^${company}$`, 'i');
+    if (company && company !== 'All' && company !== 'undefined' && company !== 'null') {
+      filter.company = new RegExp(`^${company.trim()}$`, 'i');
     }
 
-    if (search) {
-      const q = new RegExp(search, 'i');
+    if (search && search !== 'undefined' && search !== 'null' && search.trim() !== '') {
+      const q = new RegExp(search.trim(), 'i');
       filter.$or = [
         { model: q },
         { description: q },

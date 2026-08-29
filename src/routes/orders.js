@@ -359,28 +359,83 @@ router.post('/submit', authenticate, async (req, res) => {
 });
 
 // POST /api/orders/:id/mark-sent - Admin marks purchase order batch as sent to supplier
+// POST /api/orders/:id/mark-sent - Admin marks purchase order batch as sent to supplier
 router.post('/:id/mark-sent', authenticate, adminOnly, async (req, res) => {
   try {
+    const { productIds } = req.body;
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    order.isSentToSupplier = true;
-    order.sentToSupplierAt = new Date();
-    order.status = 'ordered';
-    await order.save();
+    if (productIds && Array.isArray(productIds) && productIds.length > 0 && productIds.length < order.items.length) {
+      // Split order: selectedItems are sent, unselectedItems are split to a remainder batch
+      const selectedItems = order.items.filter(i => productIds.includes(i.productId.toString()));
+      const unselectedItems = order.items.filter(i => !productIds.includes(i.productId.toString()));
 
-    await recordAuditLog(
-      req.user.id,
-      req.user.name,
-      'order_sent_to_supplier',
-      'orders',
-      order._id.toString(),
-      { isSentToSupplier: false },
-      { isSentToSupplier: true, status: 'ordered' },
-      { orderNumber: order.orderNumber, batch: order.batchNumber }
-    );
+      // Create a remainder batch (unsent)
+      const batchCount = (await Order.countDocuments({ staffId: order.staffId })) + 1;
+      const remainderOrder = await Order.create({
+        orderNumber: `ORD-${Date.now().toString().slice(-4)}-R${batchCount}`,
+        staffId: order.staffId,
+        status: 'submitted',
+        company: order.company,
+        batchNumber: `${order.batchNumber || 'Batch 1'} (Remainder)`,
+        isSentToSupplier: false,
+        items: unselectedItems.map(i => ({
+          productId: i.productId,
+          quantity: i.quantity,
+          unitCuft: i.unitCuft
+        })),
+        totalQuantity: unselectedItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0),
+        totalCuft: Number(unselectedItems.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2))
+      });
 
-    res.json({ message: 'Order marked as sent to supplier', order });
+      // Keep only selected items in the original order and mark as sent
+      order.items = selectedItems;
+      order.totalQuantity = selectedItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+      order.totalCuft = Number(selectedItems.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2));
+      order.isSentToSupplier = true;
+      order.sentToSupplierAt = new Date();
+      order.status = 'ordered';
+      await order.save();
+
+      await recordAuditLog(
+        req.user.id,
+        req.user.name,
+        'order_sent_partial',
+        'orders',
+        order._id.toString(),
+        { originalItemsCount: order.items.length + unselectedItems.length },
+        { sentItemsCount: selectedItems.length, remainderOrderId: remainderOrder._id.toString() },
+        { 
+          orderNumber: order.orderNumber, 
+          details: `Sent ${selectedItems.length} items. Split ${unselectedItems.length} remaining items to new batch ${remainderOrder.orderNumber}`
+        }
+      );
+
+      return res.json({ 
+        message: 'Partial order marked as sent. Remainder items split into new batch.', 
+        order,
+        remainderOrder 
+      });
+    } else {
+      order.isSentToSupplier = true;
+      order.sentToSupplierAt = new Date();
+      order.status = 'ordered';
+      await order.save();
+
+      await recordAuditLog(
+        req.user.id,
+        req.user.name,
+        'order_sent_to_supplier',
+        'orders',
+        order._id.toString(),
+        { isSentToSupplier: false },
+        { isSentToSupplier: true, status: 'ordered' },
+        { orderNumber: order.orderNumber, batch: order.batchNumber }
+      );
+
+      res.json({ message: 'Order marked as sent to supplier', order });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -489,6 +544,39 @@ router.patch('/:id/status', authenticate, adminOnly, async (req, res) => {
   }
 });
 
+// PATCH /api/orders/:id/notes - update order notes
+router.patch('/:id/notes', authenticate, async (req, res) => {
+  try {
+    const { notes } = req.body;
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Authorization: Admin can update any notes, Staff can only update their own order notes
+    if (req.user.role !== 'admin' && order.staffId.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const oldNotes = order.notes || '';
+    order.notes = notes || '';
+    await order.save();
+
+    await recordAuditLog(
+      req.user.id,
+      req.user.name,
+      'order_notes_updated',
+      'orders',
+      order._id.toString(),
+      { notes: oldNotes },
+      { notes: order.notes },
+      { orderNumber: order.orderNumber, notes: order.notes }
+    );
+
+    res.json({ message: 'Order notes updated successfully', order });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/orders - list orders
 router.get('/', authenticate, async (req, res) => {
   try {
@@ -513,6 +601,7 @@ router.get('/', authenticate, async (req, res) => {
       itemCount: o.items.length,
       totalQuantity: o.totalQuantity,
       totalCuft: o.totalCuft,
+      notes: o.notes || '',
       items: o.items.map(i => ({
         id: i._id?.toString(),
         productId: i.productId?._id?.toString() || i.productId,

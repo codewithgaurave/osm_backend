@@ -128,8 +128,8 @@ router.get('/pending', authenticate, adminOnly, async (req, res) => {
 router.post('/', authenticate, adminOnly, async (req, res) => {
   try {
     const { company, model, description, cuft, weight, category, notes } = req.body;
-    if (!company || !model || !description || cuft === undefined) {
-      return res.status(400).json({ error: 'Company, model, description, and cuft are required.' });
+    if (!company || !model || !description) {
+      return res.status(400).json({ error: 'Company, model, and description are required.' });
     }
 
     const newProduct = await Product.create({
@@ -274,13 +274,10 @@ router.post('/:id/approve', authenticate, adminOnly, async (req, res) => {
     if (!product) return res.status(404).json({ error: 'Product not found' });
 
     const { cuft, weight, category, notes, description } = req.body;
-    if (cuft === undefined || cuft === null || Number(cuft) <= 0) {
-      return res.status(400).json({ error: 'Valid Cubic Feet (Cuft) is required to approve product.' });
-    }
 
     const oldProduct = product.toObject();
     product.status = 'approved';
-    product.cuft = Number(cuft);
+    product.cuft = cuft !== undefined && cuft !== null ? Number(cuft) : 0;
     if (weight !== undefined) product.weight = Number(weight);
     if (category) product.category = category;
     if (notes) product.notes = notes;

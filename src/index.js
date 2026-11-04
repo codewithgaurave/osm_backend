@@ -12,6 +12,7 @@ import auditRoutes from './routes/audit.js';
 import staffRoutes from './routes/staff.js';
 import exportRoutes from './routes/export.js';
 import notificationRoutes from './routes/notifications.js';
+import notesRoutes from './routes/notes.js';
 
 dotenv.config();
 
@@ -36,6 +37,7 @@ app.use('/api/audit', auditRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/notes', notesRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

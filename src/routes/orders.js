@@ -204,45 +204,54 @@ router.post('/cell-update', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Product or staff not found' });
     }
 
-    // Find active (unsent) order for this staff, or create one
-    // If the existing order with this product is already sent to supplier, create a new batch!
-    const sentOrders = await Order.find({
-      staffId: targetStaffId,
-      $or: [{ isSentToSupplier: true }, { status: { $in: ['ordered', 'packed', 'loaded', 'arrived'] } }]
-    });
+    // Check all previous orders for this staff
+    const staffOrders = await Order.find({ staffId: targetStaffId }).sort({ createdAt: 1 });
 
-    let activeOrder = await Order.findOne({
-      staffId: targetStaffId,
-      isSentToSupplier: false,
-      status: { $in: ['draft', 'submitted', 'approved'] }
-    });
+    // Placed/Completed orders: any order where status is not draft, or already sent to supplier
+    const placedOrders = staffOrders.filter(o => 
+      o.isSentToSupplier || ['submitted', 'approved', 'ordered', 'packed', 'loaded', 'arrived', 'completed'].includes(o.status)
+    );
 
-    // Check if there is already a sent order containing this product
-    const alreadySentItemOrder = sentOrders.find(o => 
-      o.items.some(i => i.productId.toString() === productId)
+    // Active unsubmitted draft order (if any)
+    let activeDraftOrder = staffOrders.find(o => 
+      !o.isSentToSupplier && o.status === 'draft'
+    );
+
+    // Check if any placed order already contains this product
+    const placedOrderWithItem = placedOrders.find(o => 
+      o.items.some(i => i.productId.toString() === productId.toString())
     );
 
     let order;
-    if (alreadySentItemOrder && !activeOrder) {
-      // Create a new Addendum Batch order
-      const batchCount = sentOrders.length + 1;
+    let isNewOrderCreated = false;
+
+    if (placedOrders.length > 0 && !activeDraftOrder) {
+      // If previous order(s) exist and are already placed/submitted ("order ho chuka hai"),
+      // and a new product (or new quantity) is added, it MUST become a NEW ORDER!
+      const totalStaffOrders = staffOrders.length;
+      const batchCount = totalStaffOrders + 1;
+      const parentOrder = placedOrderWithItem || placedOrders[placedOrders.length - 1];
+
       order = await Order.create({
         orderNumber: `ORD-${Date.now().toString().slice(-4)}-B${batchCount}`,
         staffId: targetStaffId,
         status: 'submitted',
         company: product.company,
-        batchNumber: `Batch ${batchCount} (Addendum)`,
+        batchNumber: `Batch ${batchCount} (New Order)`,
         isSentToSupplier: false,
-        parentOrderId: alreadySentItemOrder._id,
+        parentOrderId: parentOrder ? parentOrder._id : null,
         items: []
       });
-    } else if (activeOrder) {
-      order = activeOrder;
+      isNewOrderCreated = true;
+    } else if (activeDraftOrder) {
+      // If there is an open draft (unsubmitted) order, use that draft
+      order = activeDraftOrder;
     } else {
+      // First order for this staff
       order = await Order.create({
         orderNumber: `ORD-${Date.now().toString().slice(-4)}`,
         staffId: targetStaffId,
-        status: 'submitted',
+        status: 'draft',
         company: product.company,
         batchNumber: 'Batch 1',
         isSentToSupplier: false,
@@ -250,8 +259,8 @@ router.post('/cell-update', authenticate, async (req, res) => {
       });
     }
 
-    // Check item existence in the current active order
-    const itemIndex = order.items.findIndex(i => i.productId.toString() === productId);
+    // Check item existence in the target order
+    const itemIndex = order.items.findIndex(i => i.productId.toString() === productId.toString());
     const oldQty = itemIndex >= 0 ? order.items[itemIndex].quantity : 0;
 
     if (targetQty <= 0) {
@@ -274,27 +283,48 @@ router.post('/cell-update', authenticate, async (req, res) => {
     order.totalCuft = Number(order.items.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2));
     await order.save();
 
+    // If new order was created because previous order was already placed, notify admins
+    if (isNewOrderCreated && targetQty > 0) {
+      const admins = await User.find({ role: 'admin' });
+      for (const admin of admins) {
+        await Notification.create({
+          userId: admin._id,
+          title: 'New Order Batch Created',
+          message: `${staff.name} added ${product.model} as a new order (${order.orderNumber} - ${order.batchNumber}) because previous order was already placed.`,
+          read: false
+        });
+      }
+    }
+
     // Record Audit Log
-    if (oldQty !== targetQty) {
+    if (oldQty !== targetQty || isNewOrderCreated) {
       await recordAuditLog(
         req.user.id,
         req.user.name,
-        'order_cell_updated',
+        isNewOrderCreated ? 'new_order_created_for_product' : 'order_cell_updated',
         'order_items',
         productId,
         { product: `${product.model} (${product.description})`, staff: staff.name, quantity: oldQty },
-        { product: `${product.model} (${product.description})`, staff: staff.name, quantity: targetQty, batch: order.batchNumber },
-        { change: `${oldQty} → ${targetQty}`, staffName: staff.name, model: product.model, batch: order.batchNumber }
+        { product: `${product.model} (${product.description})`, staff: staff.name, quantity: targetQty, batch: order.batchNumber, orderNumber: order.orderNumber },
+        { 
+          change: `${oldQty} → ${targetQty}`, 
+          staffName: staff.name, 
+          model: product.model, 
+          batch: order.batchNumber,
+          isNewOrder: isNewOrderCreated,
+          details: isNewOrderCreated ? `Created new order ${order.orderNumber} because previous order was already placed` : 'Cell quantity updated'
+        }
       );
     }
 
     res.json({ 
-      message: 'Order cell updated', 
+      message: isNewOrderCreated ? 'Previous order was already placed. Created as a new order batch.' : 'Order cell updated', 
       productId, 
       staffId: targetStaffId, 
       quantity: targetQty,
       batchNumber: order.batchNumber,
-      orderNumber: order.orderNumber
+      orderNumber: order.orderNumber,
+      isNewOrder: isNewOrderCreated
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -353,6 +383,128 @@ router.post('/submit', authenticate, async (req, res) => {
       orderNumbers,
       orderNumber: orderNumbers[0] 
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/orders/:id/add-product - Add new product to order (creates NEW ORDER if order is already placed/submitted)
+router.post('/:id/add-product', authenticate, async (req, res) => {
+  try {
+    const { productId, quantity } = req.body;
+    const targetQty = Number(quantity);
+
+    if (!productId || isNaN(targetQty) || targetQty <= 0) {
+      return res.status(400).json({ error: 'Valid productId and positive quantity are required.' });
+    }
+
+    const [targetOrder, product] = await Promise.all([
+      Order.findById(req.params.id),
+      Product.findById(productId)
+    ]);
+
+    if (!targetOrder) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found.' });
+    }
+
+    // Check authorization: Admin can add to any order, staff can add to their own order
+    if (req.user.role !== 'admin' && targetOrder.staffId.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized to modify this order.' });
+    }
+
+    const isOrderPlaced = targetOrder.isSentToSupplier || ['submitted', 'approved', 'ordered', 'packed', 'loaded', 'arrived', 'completed'].includes(targetOrder.status);
+
+    if (isOrderPlaced) {
+      // Order is already placed/submitted! As required: "koi order ho chuka hai aur koi aur product usme add kiya jata hai to wo as a new order banega"
+      const totalStaffOrders = await Order.countDocuments({ staffId: targetOrder.staffId });
+      const batchCount = totalStaffOrders + 1;
+      const newOrderNumber = `ORD-${Date.now().toString().slice(-4)}-B${batchCount}`;
+
+      const newOrder = await Order.create({
+        orderNumber: newOrderNumber,
+        staffId: targetOrder.staffId,
+        status: 'submitted',
+        company: product.company || targetOrder.company,
+        batchNumber: `Batch ${batchCount} (Addendum to ${targetOrder.orderNumber})`,
+        isSentToSupplier: false,
+        parentOrderId: targetOrder._id,
+        items: [{
+          productId: product._id,
+          quantity: targetQty,
+          unitCuft: product.cuft || 0
+        }],
+        totalQuantity: targetQty,
+        totalCuft: Number((targetQty * (product.cuft || 0)).toFixed(2)),
+        notes: `Added as new order linked to previous placed order ${targetOrder.orderNumber}`
+      });
+
+      // Notify admins
+      const admins = await User.find({ role: 'admin' });
+      for (const admin of admins) {
+        await Notification.create({
+          userId: admin._id,
+          title: 'New Order Created for Product',
+          message: `${req.user.name} added ${product.model} (qty: ${targetQty}) as a new order (${newOrder.orderNumber}) because ${targetOrder.orderNumber} was already placed.`,
+          read: false
+        });
+      }
+
+      await recordAuditLog(
+        req.user.id,
+        req.user.name,
+        'new_order_created_for_product',
+        'orders',
+        newOrder._id.toString(),
+        { originalOrder: targetOrder.orderNumber, status: targetOrder.status },
+        { newOrderNumber: newOrder.orderNumber, product: product.model, quantity: targetQty },
+        { message: `Created new order ${newOrder.orderNumber} because ${targetOrder.orderNumber} is already ${targetOrder.status}.` }
+      );
+
+      return res.status(201).json({
+        success: true,
+        isNewOrder: true,
+        newOrder,
+        message: `Order ${targetOrder.orderNumber} was already placed (${targetOrder.status}). A new order (${newOrder.orderNumber}) has been created with ${product.model}!`
+      });
+    } else {
+      // Order is still a draft, append or update item directly
+      const itemIndex = targetOrder.items.findIndex(i => i.productId.toString() === productId.toString());
+      if (itemIndex >= 0) {
+        targetOrder.items[itemIndex].quantity += targetQty;
+      } else {
+        targetOrder.items.push({
+          productId: product._id,
+          quantity: targetQty,
+          unitCuft: product.cuft || 0
+        });
+      }
+
+      targetOrder.totalQuantity = targetOrder.items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+      targetOrder.totalCuft = Number(targetOrder.items.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2));
+      await targetOrder.save();
+
+      await recordAuditLog(
+        req.user.id,
+        req.user.name,
+        'draft_order_product_added',
+        'orders',
+        targetOrder._id.toString(),
+        null,
+        { product: product.model, addedQuantity: targetQty },
+        { message: `Added ${product.model} to draft order ${targetOrder.orderNumber}` }
+      );
+
+      return res.json({
+        success: true,
+        isNewOrder: false,
+        order: targetOrder,
+        message: `Added ${product.model} to draft order ${targetOrder.orderNumber}.`
+      });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

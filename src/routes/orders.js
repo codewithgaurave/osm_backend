@@ -50,6 +50,21 @@ router.get('/matrix', authenticate, async (req, res) => {
       Order.find({})
     ]);
 
+    // For each staff member, find their single active order to show in the matrix.
+    // Active order = unsent draft first; if none, the most recent unsent order.
+    // We do NOT sum across all batches — that would inflate quantities.
+    const activeOrderByStaff = {};
+    staffList.forEach(staff => {
+      const sid = staff._id.toString();
+      const staffOrders = orders
+        .filter(o => o.staffId.toString() === sid)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      // Prefer an unsent draft; fall back to the latest unsent order
+      const activeDraft = staffOrders.find(o => !o.isSentToSupplier && o.status === 'draft');
+      const latestUnsent = staffOrders.find(o => !o.isSentToSupplier);
+      activeOrderByStaff[sid] = activeDraft || latestUnsent || null;
+    });
+
     const matrix = products.map(product => {
       const row = {
         id: product._id.toString(),
@@ -62,14 +77,15 @@ router.get('/matrix', authenticate, async (req, res) => {
       };
 
       staffList.forEach(staff => {
-        const staffOrders = orders.filter(o => o.staffId.toString() === staff._id.toString());
+        const sid = staff._id.toString();
+        const activeOrder = activeOrderByStaff[sid];
         let staffQty = 0;
-        staffOrders.forEach(o => {
-          const item = o.items.find(i => i.productId.toString() === product._id.toString());
-          if (item) staffQty += Number(item.quantity || 0);
-        });
+        if (activeOrder) {
+          const item = activeOrder.items.find(i => i.productId.toString() === product._id.toString());
+          if (item) staffQty = Number(item.quantity || 0);
+        }
 
-        row[staff._id.toString()] = staffQty;
+        row[sid] = staffQty;
         row.total += staffQty;
       });
 

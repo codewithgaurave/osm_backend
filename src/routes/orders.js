@@ -220,18 +220,45 @@ router.post('/cell-update', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Product or staff not found' });
     }
 
-    // Check all previous orders for this staff
-    const staffOrders = await Order.find({ staffId: targetStaffId }).sort({ createdAt: 1 });
+    // Check all previous orders for this staff — sort newest first so we always
+    // operate on the same order document that the matrix query displays.
+    const staffOrders = await Order.find({ staffId: targetStaffId }).sort({ createdAt: -1 });
 
     // Placed/Completed orders: any order where status is not draft, or already sent to supplier
     const placedOrders = staffOrders.filter(o => 
       o.isSentToSupplier || ['submitted', 'approved', 'ordered', 'packed', 'loaded', 'arrived', 'completed'].includes(o.status)
     );
 
-    // Active unsubmitted draft order (if any)
-    let activeDraftOrder = staffOrders.find(o => 
-      !o.isSentToSupplier && o.status === 'draft'
-    );
+    // All unsent draft orders (there may be multiple due to historical bug)
+    const draftOrders = staffOrders.filter(o => !o.isSentToSupplier && o.status === 'draft');
+
+    // If multiple drafts exist, consolidate them into one (merge items, delete extras)
+    if (draftOrders.length > 1) {
+      const primaryDraft = draftOrders[0]; // newest draft (sort desc)
+      for (let i = 1; i < draftOrders.length; i++) {
+        const extra = draftOrders[i];
+        extra.items.forEach(extraItem => {
+          const existingIdx = primaryDraft.items.findIndex(
+            pi => pi.productId.toString() === extraItem.productId.toString()
+          );
+          if (existingIdx >= 0) {
+            // Keep the higher quantity (take the latest intent)
+            if (Number(extraItem.quantity) > Number(primaryDraft.items[existingIdx].quantity)) {
+              primaryDraft.items[existingIdx].quantity = extraItem.quantity;
+            }
+          } else {
+            primaryDraft.items.push({ productId: extraItem.productId, quantity: extraItem.quantity, unitCuft: extraItem.unitCuft });
+          }
+        });
+        await Order.findByIdAndDelete(extra._id);
+      }
+      primaryDraft.totalQuantity = primaryDraft.items.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+      primaryDraft.totalCuft = Number(primaryDraft.items.reduce((s, i) => s + ((Number(i.quantity) || 0) * (i.unitCuft || 0)), 0).toFixed(2));
+      await primaryDraft.save();
+    }
+
+    // Active unsubmitted draft order — always the newest one
+    let activeDraftOrder = draftOrders[0] || null;
 
     // Check if any placed order already contains this product
     const placedOrderWithItem = placedOrders.find(o => 

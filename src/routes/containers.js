@@ -173,6 +173,69 @@ router.post('/:id/assign', authenticate, adminOnly, async (req, res) => {
   }
 });
 
+// PATCH /api/containers/:id/rename - rename a container
+router.patch('/:id/rename', authenticate, adminOnly, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Container name is required' });
+    }
+
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ error: 'Container not found' });
+
+    const oldName = container.name;
+    container.name = name.trim();
+    await container.save();
+
+    await recordAuditLog(
+      req.user.id,
+      req.user.name,
+      'container_renamed',
+      'containers',
+      container._id.toString(),
+      { name: oldName },
+      { name: container.name },
+      { from: oldName, to: container.name }
+    );
+
+    res.json({ message: `Container renamed to "${container.name}"`, container });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/containers/:id - delete a container (only if empty / draft)
+router.delete('/:id', authenticate, adminOnly, async (req, res) => {
+  try {
+    const container = await Container.findById(req.params.id);
+    if (!container) return res.status(404).json({ error: 'Container not found' });
+
+    if (container.loadedProducts && container.loadedProducts.length > 0) {
+      return res.status(400).json({
+        error: 'Cannot delete a container that has products assigned to it. Remove all products first.'
+      });
+    }
+
+    await recordAuditLog(
+      req.user.id,
+      req.user.name,
+      'container_deleted',
+      'containers',
+      container._id.toString(),
+      { name: container.name, status: container.status },
+      null,
+      { deletedContainer: container.name }
+    );
+
+    await Container.findByIdAndDelete(req.params.id);
+
+    res.json({ message: `Container "${container.name}" deleted successfully` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/containers/:id/status - update container status
 router.patch('/:id/status', authenticate, adminOnly, async (req, res) => {
   try {
